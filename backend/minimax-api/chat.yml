@@ -1,0 +1,33 @@
+info:
+  name: chat
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: https://api.minimax.chat/v1/text/chatcompletion_v2?GroupId={{GROUP_ID}}
+  headers:
+    - name: Authorization
+      value: Bearer {{API_KEY}}
+    - name: Content-Type
+      value: application/json
+  params:
+    - name: GroupId
+      value: "{{GROUP_ID}}"
+      type: query
+  body:
+    type: json
+    data: |
+      {
+        "model": "MiniMax-M2.5",
+        "messages": [
+          {"role": "user", "content": "你好"}
+        ]
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

@@ -3,4 +3,4 @@ __pycache__/
 *.pyc
 venv/
 .venv/
-backend/minimax-api/
+backend/minimax-api/environments/
