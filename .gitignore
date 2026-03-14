@@ -3,4 +3,4 @@ __pycache__/
 *.pyc
 venv/
 .venv/
-backend/minimax-api/chat.yml
+backend/minimax-api/
