@@ -1,5 +1,3 @@
-import os
-
 def main():
   notes = load_notes('sample_notes.txt')
   print(notes)
