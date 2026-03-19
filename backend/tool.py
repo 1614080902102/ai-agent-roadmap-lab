@@ -1,4 +1,5 @@
 from langchain_core.tools import tool
+from llm_client import llm
 
 def main():
   print(extract_todo.name)
@@ -34,6 +35,30 @@ def read_file(filepath):
   """
   with open(filepath, 'r', encoding="utf-8") as f:
     return f.read()
+
+@tool
+def summarize_doc(filepath):
+  """
+    读取指定文件，总结要点
+    返回：总结的要点内容
+  """
+  with open(filepath, 'r', encoding="utf-8") as f:
+    content = f.read()
+    prompt = f"请总结以下文档的要点：\n\n{content}"
+  result = llm.invoke(prompt)
+  return result.content
+
+@tool
+def extract_action_items(filepath):
+  """
+    读取指定文件，提取行动项
+    返回：提取的行动项内容
+  """
+  with open(filepath, 'r', encoding="utf-8") as f:
+    content = f.read()
+    prompt = f"请从以下文档中提取出需要执行的行动项：\n\n{content}"
+  result = llm.invoke(prompt)
+  return result.content
 
 if __name__ == "__main__":
   main()

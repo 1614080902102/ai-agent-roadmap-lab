@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from fastapi import UploadFile # 导入文件上传
+from rag import index_document, rag_query
 
 # 加载 .env 文件（路径相对于本文件所在目录）
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -48,6 +50,8 @@ class ChatRequest(BaseModel):
     message: str
     history: list = []  # 可选，默认空列表；每条格式：{"role": "user"/"assistant", "content": "..."}
 
+class RagRequest(BaseModel):
+    question: str
 
 # ── Day 3 接口 ────────────────────────────────────────────────────────────────
 
@@ -189,3 +193,32 @@ def chat_stream(body: ChatRequest):
 
     # StreamingResponse 类比：res.setHeader('Content-Type', 'text/event-stream') + res.write()
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# POST /upload
+@app.post("/upload")
+def upload(file: UploadFile):
+    # 1. 确保 uploads 目录存在
+    os.makedirs("./uploads", exist_ok=True)
+
+    # 2. 拼保存路径
+    save_path = f"./uploads/{file.filename}"
+
+    # 3. 读取上传内容，写入磁盘
+    with open(save_path, "wb") as f:
+        f.write(file.read())  # 这里填什么？提示：从 file 里读内容
+
+    index_document(save_path)
+
+    return {
+        "message": "上传成功",
+        "filename": file.filename
+    }
+
+
+# POST /rag
+@app.post("/rag")
+def rag(body: RagRequest):
+    result = rag_query(body.question)
+    if result:
+        return {"answer": result.content}

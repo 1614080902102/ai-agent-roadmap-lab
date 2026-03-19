@@ -8,3 +8,5 @@ backend/history.json
 node_modules/
 frontend/dist/
 frontend/.env
+backend/chroma_db/
+backend/uploads/
