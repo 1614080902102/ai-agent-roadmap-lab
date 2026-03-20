@@ -221,4 +221,4 @@ def upload(file: UploadFile):
 def rag(body: RagRequest):
     result = rag_query(body.question)
     if result:
-        return {"answer": result.content}
+        return result
