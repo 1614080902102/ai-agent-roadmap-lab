@@ -1,25 +1,21 @@
 import os
 import json
 import requests
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi import UploadFile # 导入文件上传
 from rag import index_document, rag_query
+from utils import get_logger
+from config import MINIMAX_API_KEY, MINIMAX_GROUP_ID, MINIMAX_BASE_URL, MINIMAX_HEADERS
+
+logger = get_logger(__name__)
 
 # 加载 .env 文件（路径相对于本文件所在目录）
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+# load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-api_key = os.getenv("MINIMAX_API_KEY")
-group_id = os.getenv("MINIMAX_GROUP_ID")
-
-MINIMAX_URL = f"https://api.minimax.chat/v1/text/chatcompletion_v2?GroupId={group_id}"
-MINIMAX_HEADERS = {
-    "Authorization": f"Bearer {api_key}",
-    "Content-Type": "application/json",
-}
 
 # ── FastAPI 实例 ──────────────────────────────────────────────────────────────
 # 类比：const app = express()
@@ -47,11 +43,14 @@ class SummarizeRequest(BaseModel):
     text: str
 
 class ChatRequest(BaseModel):
+    session_id: str
     message: str
-    history: list = []  # 可选，默认空列表；每条格式：{"role": "user"/"assistant", "content": "..."}
 
 class RagRequest(BaseModel):
     question: str
+
+
+sessions = {}  # 用于存储会话历史，key 是 session_id，value 是消息列表
 
 # ── Day 3 接口 ────────────────────────────────────────────────────────────────
 
@@ -87,25 +86,29 @@ def summarize_mock(body: SummarizeRequest):
 # 后端返回 reply（AI 回复）+ updated_history（加入本轮后的完整历史）
 @app.post("/chat")
 def chat(body: ChatRequest):
-    if not api_key or not group_id:
+    if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
+        logger.error("API key 未配置，检查 .env 文件")
         raise HTTPException(status_code=500, detail="API key 未配置，检查 .env 文件")
 
     # 拼装 messages：system + 历史 + 本次用户输入
     messages = [
         {"role": "system", "content": "你是一个简洁、友好、科学、严谨的 AI 助手。"}
     ]
-    messages += body.history
+    messages = messages + sessions.get(body.session_id, [])  # 获取历史消息，如果没有就用空列表
     messages.append({"role": "user", "content": body.message})
 
     try:
         resp = requests.post(
-            MINIMAX_URL,
+            MINIMAX_BASE_URL,
             headers=MINIMAX_HEADERS,
             json={"model": "MiniMax-M2.5", "messages": messages},
             timeout=30,  # 超过 30 秒视为超时
         )
+        logger.info(f"MiniMax 响应状态码: {resp.status_code}")
         resp.raise_for_status()  # 4xx / 5xx 时抛异常
+
     except requests.Timeout:
+        logger.error("模型响应超时，请重试")
         raise HTTPException(status_code=504, detail="模型响应超时，请重试")
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"调用 MiniMax 失败：{e}")
@@ -113,17 +116,19 @@ def chat(body: ChatRequest):
     data = resp.json()
 
     if not data.get("choices"):
+        logger.error(f"MiniMax 返回异常：{data.get('base_resp')}")
         raise HTTPException(status_code=502, detail=f"MiniMax 返回异常：{data.get('base_resp')}")
 
     reply = data["choices"][0]["message"]["content"]
 
     # 更新历史，返回给前端，让前端自己维护 history 状态
-    updated_history = body.history + [
+    updated_history = sessions.get(body.session_id, []) + [
         {"role": "user", "content": body.message},
         {"role": "assistant", "content": reply},
     ]
+    sessions[body.session_id] = updated_history
 
-    return {"reply": reply, "history": updated_history}
+    return {"reply": reply}
 
 
 # ── Day 6 接口 ────────────────────────────────────────────────────────────────
@@ -133,19 +138,19 @@ def chat(body: ChatRequest):
 # 格式固定：每条消息是 "data: 内容\n\n"，前端用 ReadableStream 逐块读取
 @app.post("/chat/stream")
 def chat_stream(body: ChatRequest):
-    if not api_key or not group_id:
+    if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
         raise HTTPException(status_code=500, detail="API key 未配置，检查 .env 文件")
 
     messages = [
         {"role": "system", "content": "你是一个简洁、友好、科学、严谨的 AI 助手。"}
     ]
-    messages += body.history
+    messages += sessions.get(body.session_id, [])
     messages.append({"role": "user", "content": body.message})
 
     def generate():
         # stream=True 告诉 requests 不要一次性读完，而是边收边给我们
         with requests.post(
-            MINIMAX_URL,
+            MINIMAX_BASE_URL,
             headers=MINIMAX_HEADERS,
             json={"model": "MiniMax-M2.5", "messages": messages, "stream": True},
             stream=True,
@@ -184,12 +189,12 @@ def chat_stream(body: ChatRequest):
                     # 把这段增量发给前端，格式：data: 文字\n\n
                     yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
 
-            # 流结束后，把完整历史通过最后一条 SSE 发给前端，让前端更新 history
-            updated_history = body.history + [
+            # 流结束后，更新服务端 sessions，并通知前端流已结束
+            sessions[body.session_id] = sessions.get(body.session_id, []) + [
                 {"role": "user", "content": body.message},
                 {"role": "assistant", "content": full_reply},
             ]
-            yield f"data: {json.dumps({'done': True, 'history': updated_history}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
 
     # StreamingResponse 类比：res.setHeader('Content-Type', 'text/event-stream') + res.write()
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -198,27 +203,35 @@ def chat_stream(body: ChatRequest):
 # POST /upload
 @app.post("/upload")
 def upload(file: UploadFile):
-    # 1. 确保 uploads 目录存在
-    os.makedirs("./uploads", exist_ok=True)
+    try:
+        # 1. 确保 uploads 目录存在
+        os.makedirs("./uploads", exist_ok=True)
 
-    # 2. 拼保存路径
-    save_path = f"./uploads/{file.filename}"
+        # 2. 拼保存路径
+        save_path = f"./uploads/{file.filename}"
 
-    # 3. 读取上传内容，写入磁盘
-    with open(save_path, "wb") as f:
-        f.write(file.read())  # 这里填什么？提示：从 file 里读内容
+        # 3. 读取上传内容，写入磁盘
+        with open(save_path, "wb") as f:
+            f.write(file.read())  # 这里填什么？提示：从 file 里读内容
 
-    index_document(save_path)
+        index_document(save_path)
 
-    return {
-        "message": "上传成功",
-        "filename": file.filename
-    }
+        return {
+            "message": "上传成功",
+            "filename": file.filename
+        }
+
+    except Exception as e:
+        logger.error(f"上传失败：{e}")
+        raise HTTPException(status_code=500, detail=f"上传失败：{e}")
 
 
 # POST /rag
 @app.post("/rag")
 def rag(body: RagRequest):
-    result = rag_query(body.question)
-    if result:
+    try:
+        result = rag_query(body.question)
         return result
+    except Exception as e:
+        logger.error(f"RAG 查询失败：{e}")
+        raise HTTPException(status_code=500, detail=str(e))

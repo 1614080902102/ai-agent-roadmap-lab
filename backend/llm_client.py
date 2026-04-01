@@ -1,11 +1,9 @@
 import os
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from config import MINIMAX_API_KEY, MINIMAX_BASE_URL, MINIMAX_MODEL, MINIMAX_GROUP_ID
 
-load_dotenv()
-
-api_key = os.getenv('MINIMAX_API_KEY') # 读取环境变量
-group_id = os.getenv("MINIMAX_GROUP_ID")
-base_url = f"https://api.minimax.chat/v1"
+api_key = MINIMAX_API_KEY # 读取环境变量
+group_id = MINIMAX_GROUP_ID
+base_url = MINIMAX_BASE_URL
 
 llm = ChatOpenAI(model='Minimax-M2.5', api_key=api_key, base_url=base_url)

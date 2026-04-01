@@ -76,7 +76,7 @@ async function sendChatMessage(text: string) {
   await scrollToBottom()
 
   try {
-    const res = await fetch('http://localhost:8000/chat/stream', {
+    const res = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text, history: history.value }),
@@ -100,7 +100,10 @@ async function sendChatMessage(text: string) {
           const data = JSON.parse(dataStr)
 
           if (data.delta) {
-            messages.value[assistantIdx].content += data.delta
+            const msg = messages.value[assistantIdx]
+            if (msg) msg.content += data.delta
+
+            // messages.value[assistantIdx].content += data.delta
             await scrollToBottom()
           }
 
@@ -126,7 +129,7 @@ async function sendRagMessage(text: string) {
   await scrollToBottom()
 
   try {
-    const res = await fetch('http://localhost:8000/rag', {
+    const res = await fetch('/api/rag', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: text }),
