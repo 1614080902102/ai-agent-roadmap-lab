@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi import UploadFile # 导入文件上传
-from rag import index_document, rag_query
+from rag import index_document, index_url, rag_query, rag_query_wechat
 from utils import get_logger
 from config import MINIMAX_API_KEY, MINIMAX_GROUP_ID, MINIMAX_BASE_URL, MINIMAX_HEADERS
 
@@ -48,6 +48,9 @@ class ChatRequest(BaseModel):
 
 class RagRequest(BaseModel):
     question: str
+
+class IndexRequest(BaseModel):
+    url: str
 
 
 sessions = {}  # 用于存储会话历史，key 是 session_id，value 是消息列表
@@ -235,3 +238,25 @@ def rag(body: RagRequest):
     except Exception as e:
         logger.error(f"RAG 查询失败：{e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# POST /rag/wechat —— 基于公众号文章库回答
+@app.post("/rag/wechat")
+def rag_wechat(body: RagRequest):
+    try:
+        result = rag_query_wechat(body.question)
+        return result
+    except Exception as e:
+        logger.error(f"公众号 RAG 查询失败：{e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# POST /index —— 抓取公众号文章并建立索引
+@app.post("/index")
+def index_article(body: IndexRequest):
+    try:
+        result = index_url(body.url)
+        return result
+    except Exception as e:
+        logger.error(f"文章索引失败：{e}")
+        raise HTTPException(status_code=500, detail=f"文章索引失败：{e}")

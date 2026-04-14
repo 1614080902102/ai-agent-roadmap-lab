@@ -1,4 +1,5 @@
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import TextLoader, WebBaseLoader
+from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
@@ -7,16 +8,22 @@ from langchain_chroma import Chroma
 from embedding_client import embeddings
 from llm_client import llm
 import re
+import requests
+import urllib3
+from bs4 import BeautifulSoup
 from utils import get_logger
 from config import chromadb_client
 
-COLLECTION_NAME = "my_docs"
-RETRIEVER_K = 3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def _get_retriever():
+COLLECTION_NAME = "my_docs"
+WECHAT_COLLECTION_NAME = "wechat_articles"
+RETRIEVER_K = 6
+
+def _get_retriever(collection_name=COLLECTION_NAME):
   db = Chroma(
     embedding_function=embeddings,
-    collection_name=COLLECTION_NAME,
+    collection_name=collection_name,
     client=chromadb_client
   )
   return db.as_retriever(search_kwargs={"k": RETRIEVER_K})
@@ -29,10 +36,17 @@ def _get_source(metadata):
 
 
 def _build_sources(docs):
-  return [
-    {"content": doc.page_content, "file": _get_source(doc.metadata)}
-    for doc in docs
-  ]
+  sources = []
+  for doc in docs:
+    meta = doc.metadata or {}
+    source = {
+      "content": doc.page_content,
+      "file": meta.get("source") or meta.get("url") or "未知来源",
+      "title": meta.get("title") or "",
+      "url": meta.get("url") or "",
+    }
+    sources.append(source)
+  return sources
 
 
 def _format_docs(docs):
@@ -47,14 +61,51 @@ def index_document(filepath):
   splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50).split_documents(documents)
   Chroma.from_documents(splitter, embeddings, client=chromadb_client, collection_name=COLLECTION_NAME)
 
-def rag_query(question):
-  retriever = _get_retriever()
+
+def _fetch_wechat_article(url: str):
+  """使用微信移动端 UA 抓取公众号文章，返回 (title, content)"""
+  headers = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 MicroMessenger/8.0.38(0x1800262c) NetType/WIFI Language/zh_CN",
+  }
+  resp = requests.get(url, headers=headers, verify=False, timeout=30)
+  resp.raise_for_status()
+  soup = BeautifulSoup(resp.text, "html.parser")
+
+  title_tag = soup.find("h1", class_="rich_media_title") or soup.find("h2", class_="rich_media_title")
+  title = title_tag.get_text(strip=True) if title_tag else ""
+
+  content_tag = soup.find(id="js_content")
+  content = content_tag.get_text(separator="\n", strip=True) if content_tag else ""
+
+  return title, content
+
+
+def index_url(url: str):
+  if "mp.weixin.qq.com" in url:
+    title, content = _fetch_wechat_article(url)
+    documents = [Document(page_content=content, metadata={"source": url, "url": url, "title": title})]
+  else:
+    loader = WebBaseLoader(url, requests_kwargs={"verify": False})
+    documents = loader.load()
+    for doc in documents:
+      doc.metadata.setdefault("source", url)
+      doc.metadata.setdefault("url", url)
+      if not doc.metadata.get("title"):
+        doc.metadata["title"] = ""
+
+  splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50).split_documents(documents)
+  Chroma.from_documents(splitter, embeddings, client=chromadb_client, collection_name=WECHAT_COLLECTION_NAME)
+  return {"message": "索引成功", "url": url, "title": documents[0].metadata.get("title", "") if documents else ""}
+
+
+def rag_query(question, collection_name=COLLECTION_NAME):
+  retriever = _get_retriever(collection_name)
   docs = retriever.invoke(question)
   context = _format_docs(docs)
   prompt = ChatPromptTemplate.from_template(
     """请仅根据提供的检索内容回答问题，不要补充检索内容中没有的信息。
 
-      如果检索内容不足以支持答案，请明确回答“未找到”。
+      如果检索内容不足以支持答案，请明确回答"未找到"。
 
       回答请按以下结构组织：
       1. 结论
@@ -81,6 +132,10 @@ def rag_query(question):
     "answer": re.sub(r'<think>.*?</think>', '', answer, flags=re.DOTALL).strip(),
     "sources": _build_sources(docs),
   }
+
+
+def rag_query_wechat(question):
+  return rag_query(question, collection_name=WECHAT_COLLECTION_NAME)
 
 @tool
 def search_docs(question):

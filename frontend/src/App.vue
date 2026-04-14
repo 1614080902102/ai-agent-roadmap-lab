@@ -21,7 +21,7 @@ interface RagMessage {
 }
 
 // 模式切换
-const mode = ref<'chat' | 'rag'>('chat')
+const mode = ref<'chat' | 'rag' | 'wechat'>('chat')
 
 // Chat 模式状态
 const messages = ref<Message[]>([])
@@ -29,6 +29,12 @@ const history = ref<Message[]>([])
 
 // RAG 模式状态
 const ragMessages = ref<RagMessage[]>([])
+
+// 公众号模式状态
+const wechatMessages = ref<RagMessage[]>([])
+const articleUrl = ref('')
+const indexLoading = ref(false)
+const indexMessage = ref('')
 
 // 共享状态
 const input = ref('')
@@ -58,6 +64,8 @@ async function sendMessage() {
 
   if (mode.value === 'rag') {
     await sendRagMessage(text)
+  } else if (mode.value === 'wechat') {
+    await sendWechatMessage(text)
   } else {
     await sendChatMessage(text)
   }
@@ -155,6 +163,67 @@ async function sendRagMessage(text: string) {
   }
 }
 
+// ── WeChat 公众号模式 ───────────────────────────────────────────────────────
+async function sendWechatMessage(text: string) {
+  wechatMessages.value.push({ role: 'user', content: text })
+  input.value = ''
+  loading.value = true
+  error.value = ''
+  await scrollToBottom()
+
+  try {
+    const res = await fetch('/api/rag/wechat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: text }),
+    })
+
+    if (!res.ok) throw new Error('请求失败')
+
+    const data = await res.json()
+    const cleanAnswer = (data.answer || '').replace(/<think>[\s\S]*?<\/think>\s*/g, '')
+
+    wechatMessages.value.push({
+      role: 'assistant',
+      content: cleanAnswer,
+      sources: data.sources || [],
+    })
+    await scrollToBottom()
+  } catch (e: any) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function indexArticle() {
+  const url = articleUrl.value.trim()
+  if (!url || indexLoading.value) return
+
+  indexLoading.value = true
+  indexMessage.value = ''
+  error.value = ''
+
+  try {
+    const res = await fetch('/api/index', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+
+    if (!res.ok) throw new Error('索引失败')
+
+    const data = await res.json()
+    indexMessage.value = `「${data.title || data.url}」导入成功`
+    articleUrl.value = ''
+  } catch (e: any) {
+    error.value = e.message
+    indexMessage.value = ''
+  } finally {
+    indexLoading.value = false
+  }
+}
+
 // 按 Enter 发送，Shift+Enter 换行
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -186,6 +255,12 @@ function getFileName(path: string) {
         >
           RAG
         </button>
+        <button
+          :class="['mode-btn', { active: mode === 'wechat' }]"
+          @click="mode = 'wechat'"
+        >
+          公众号
+        </button>
       </div>
     </div>
 
@@ -203,7 +278,7 @@ function getFileName(path: string) {
       </template>
 
       <!-- RAG 模式 -->
-      <template v-else>
+      <template v-else-if="mode === 'rag'">
         <div v-for="(msg, i) in ragMessages" :key="i">
           <div :class="['bubble', msg.role]">
             {{ msg.content }}
@@ -228,7 +303,75 @@ function getFileName(path: string) {
                 :key="j"
                 class="source-item"
               >
-                <div class="source-file">{{ getFileName(src.file) }}</div>
+                <a
+                  v-if="src.url"
+                  class="source-title"
+                  :href="src.url"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  {{ src.title || getFileName(src.file) }}
+                </a>
+                <div v-else class="source-file">{{ getFileName(src.file) }}</div>
+                <div class="source-content">{{ src.content }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- 公众号模式 -->
+      <template v-else-if="mode === 'wechat'">
+        <!-- 导入文章区域 -->
+        <div class="wechat-import">
+          <div class="import-row">
+            <input
+              v-model="articleUrl"
+              type="text"
+              placeholder="粘贴公众号文章链接"
+              @keydown.enter="indexArticle"
+            />
+            <button :disabled="indexLoading" @click="indexArticle">
+              {{ indexLoading ? '导入中...' : '导入文章' }}
+            </button>
+          </div>
+          <div v-if="indexMessage" class="index-msg">{{ indexMessage }}</div>
+        </div>
+
+        <div v-for="(msg, i) in wechatMessages" :key="i">
+          <div :class="['bubble', msg.role]">
+            {{ msg.content }}
+          </div>
+
+          <!-- 引用来源（折叠式） -->
+          <div
+            v-if="msg.sources && msg.sources.length > 0"
+            class="sources-wrapper"
+          >
+            <button
+              class="sources-toggle"
+              @click="toggleSources(i)"
+            >
+              <span class="toggle-icon">{{ expandedSources[i] ? '▾' : '▸' }}</span>
+              引用来源（{{ msg.sources.length }} 条）
+            </button>
+
+            <div v-if="expandedSources[i]" class="sources-list">
+              <div
+                v-for="(src, j) in msg.sources"
+                :key="j"
+                class="source-item"
+              >
+                <a
+                  v-if="src.url"
+                  class="source-title"
+                  :href="src.url"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  {{ src.title || '阅读原文' }}
+                </a>
+                <div v-else class="source-file">{{ getFileName(src.file) }}</div>
                 <div class="source-content">{{ src.content }}</div>
               </div>
             </div>
@@ -391,6 +534,51 @@ function getFileName(path: string) {
   font-weight: 600;
   color: #6b7280;
   margin-bottom: 2px;
+}
+
+.source-title {
+  font-weight: 600;
+  color: #4f46e5;
+  text-decoration: none;
+  margin-bottom: 2px;
+  display: inline-block;
+}
+
+.source-title:hover {
+  text-decoration: underline;
+}
+
+/* 公众号导入区域 */
+.wechat-import {
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.import-row {
+  display: flex;
+  gap: 8px;
+}
+
+.import-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.import-row button {
+  padding: 0 14px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.index-msg {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #16a34a;
 }
 
 .source-content {
